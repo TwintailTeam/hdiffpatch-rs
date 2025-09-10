@@ -1,24 +1,29 @@
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+mod utils;
+pub mod patchers;
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::c_uchar;
-    use crate::{patch};
+    use crate::patchers::{HDiff, KrDiff};
 
     #[test]
-    fn apply_patch() {
-        let mut old_data: Vec<u8> = vec![/* source data */];
-        let patch_data: Vec<u8> = vec![/* patch data */];
+    fn apply_krdiff_patch() {
+        let src = String::from("/games/kuro/wuwa_global/cudlbt9ihina71itap0gk2i7");
+        let krdiff = String::from("/home/tukan/Downloads/2.5.1_2.6.0_1755139250977.krdiff");
+        let dst = String::from("/games/kuro/wuwa_global/testing");
 
-        let mut out_data: Vec<u8> = Vec::new();
-        let mut out_size: usize = 0;
-        
-        unsafe {
-            patch(old_data.as_mut_ptr(), old_data.as_mut_ptr(), patch_data.as_ptr(), patch_data.len() as *mut c_uchar, out_data.as_mut_ptr(), out_size as *const c_uchar);
-        }
+        let mut krd = KrDiff::new(src, krdiff, Some(dst));
+        let status = krd.apply();
+        if status { println!("krdiff applied successfully"); } else { println!("krdiff apply failed"); }
+    }
+
+    #[test]
+    fn apply_hdiff_patch() {
+        let src = String::from("<path to game dir>");
+        let hdiff = String::from("./2.5.1_2.6.0.hdiff");
+        let out = String::from("./2.5.1_2.6.1.blk");
+
+        let mut hd = HDiff::new(src, hdiff, out);
+        let status = hd.apply();
+        if status { println!("hdiff applied successfully"); } else { println!("hdiff apply failed"); }
     }
 }

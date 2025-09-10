@@ -1,11 +1,9 @@
 [package]
 name = "hdiffpatch-rs"
-description = "Rust bindings for https://github.com/sisong/HDiffPatch"
+description = "Rust implementation of HDiffPatch with bit of extra sauce"
 authors = ["TukanDev"]
 version = "0.1.0"
 edition = "2024"
 
-[build-dependencies]
-bindgen = {git = "https://github.com/rust-lang/rust-bindgen.git", branch = "main"}
-
 [dependencies]
+zstd = "0.13.3"
