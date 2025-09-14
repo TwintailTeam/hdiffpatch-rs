@@ -7,7 +7,7 @@ mod tests {
 
     #[test]
     fn apply_krdiff_patch() {
-        let src = String::from("/games/kuro/wuwa_global/cudlbt9ihina71itap0gk2i7");
+        let src = String::from("/games/kuro/wuwa_global/loiaoxtk0p0jll9mau17arwt");
         let krdiff = String::from("/home/tukan/Downloads/2.5.1_2.6.0_1755139250977.krdiff");
         let dst = String::from("/games/kuro/wuwa_global/testing");
 

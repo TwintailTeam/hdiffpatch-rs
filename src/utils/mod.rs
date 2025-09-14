@@ -9,7 +9,7 @@ pub(crate) mod parser;
 
 // We do not talk why hdiffpatch has this cursed thing btw
 #[derive(Clone, Debug)]
-pub struct VarInt(i64);
+pub struct VarInt(pub(crate) i64);
 
 #[derive(Debug, Clone)]
 pub struct Cover {

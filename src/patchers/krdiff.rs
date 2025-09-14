@@ -1,6 +1,6 @@
 use std::fs::{create_dir_all};
 use std::path::Path;
-use crate::patchers::{KrDiff};
+use crate::patchers::{KrDiff, KrPatcher};
 use crate::utils::{DirDiff};
 use crate::utils::parser::Parser;
 
@@ -15,20 +15,25 @@ impl KrDiff {
         let src = Path::new(&self.source_path);
         let diffp = Path::new(&self.kr_diff_path);
         let dst: std::path::PathBuf;
-        if let Some(d) = &self.dest_path {
-            dst = std::path::PathBuf::from(d);
-        } else {
-            dst = std::path::PathBuf::from(src);
-        }
+        if let Some(d) = &self.dest_path { dst = std::path::PathBuf::from(d); } else { dst = std::path::PathBuf::from(src).join("tmp"); }
 
         if !src.exists() || !src.is_dir() { panic!("Source path {} does not exist!", src.display()); }
         if !diffp.exists() && diffp.is_file() { panic!("Diff {} does not exist!", diffp.display()); }
         if !dst.is_dir() { panic!("Destination path {} must be a directory!", dst.display()); }
-
         if !dst.exists() { create_dir_all(dst.clone()).unwrap(); }
 
         let mut p = Parser::from_path(diffp.to_str().unwrap(), None);
-        let dir_diff = DirDiff::parse(&mut p);
+        let mut dir_diff = DirDiff::parse(&mut p);
+
+        // RLE stuff
+        if dir_diff.main_diff.compressed_rle_code_buf_size.0 > 0 { p.read_bytes::<u8>(dir_diff.main_diff.compressed_rle_code_buf_size.0 as usize); } else { p.read_bytes::<u8>(dir_diff.main_diff.rle_code_buf_size.0 as usize); }
+        if dir_diff.main_diff.compressed_rle_ctrl_buf_size.0 > 0 { p.read_bytes::<u8>(dir_diff.main_diff.compressed_rle_ctrl_buf_size.0 as usize); } else { p.read_bytes::<u8>(dir_diff.main_diff.rle_ctrl_buf_size.0 as usize); }
+        dir_diff.main_diff.new_data_offset = p.position();
+
+        println!("Parsing KrDiff file with {:?} new folder(s) and {:?} new file(s) | Old stats are {:?} folder(s) and {:?} file(s)", dir_diff.head_data.new_dirs.len(), dir_diff.head_data.new_files.len(), dir_diff.head_data.old_dirs.len(), dir_diff.head_data.old_files.len());
+
+        let mut patcher = KrPatcher::new(dir_diff, diffp).unwrap();
+        patcher.patch(src, dst.as_path());
 
         true
     }
