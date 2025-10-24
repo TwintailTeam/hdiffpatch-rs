@@ -23,7 +23,7 @@ pub struct HDiff {
     cache_size: usize,
 }
 
-pub struct KrPatcher {
+pub(crate) struct KrPatcher {
     diff: DirDiff,
     file: BufReader<File>,
     current_index: u64,
@@ -36,8 +36,8 @@ impl KrPatcher {
     pub(crate) fn new(diff: DirDiff, diff_file: impl AsRef<Path>) -> io::Result<Self> {
         let file = File::open(&diff_file)?;
         let mut buf_reader = BufReader::new(file);
+        buf_reader.seek(SeekFrom::Start(diff.main_diff.new_data_offset))?;
 
-        buf_reader.seek(io::SeekFrom::Start(diff.main_diff.new_data_offset))?;
         let decoder = Decoder::with_buffer(buf_reader)?;
         let chunk_size = 128 * 1024;
 
@@ -51,13 +51,6 @@ impl KrPatcher {
 
         let mut output_pos = 0;
         while output_pos < buf.len() {
-            if self.in_buf.is_empty() {
-                let mut file = &mut self.decoder;
-                let read_bytes = file.read(&mut self.in_buf)?;
-                if read_bytes == 0 { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Unexpected end of input")); }
-                self.in_buf.truncate(read_bytes);
-            }
-
             let read_bytes = self.decoder.read(&mut buf[output_pos..])?;
             if read_bytes == 0 { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Decompressed frame too small for requested size")); }
             output_pos += read_bytes;
@@ -92,7 +85,7 @@ impl KrPatcher {
         let new_files = self.diff.head_data.new_files.clone();
         for (i, cur_file) in new_files.iter().enumerate() {
             let destination_file = dest.join(&cur_file.name);
-            println!("[{}/{}] Patching {:?}", i + 1, &self.diff.head_data.new_files.len(), destination_file);
+            #[cfg(debug_assertions)] { println!("[{}/{}] Patching {:?}", i + 1, &self.diff.head_data.new_files.len(), destination_file); }
             let mut f = File::create(&destination_file).unwrap();
             f.set_len(cur_file.file_size).unwrap();
 
@@ -107,11 +100,10 @@ impl KrPatcher {
                     let to_write = cov.length.min(remaining);
                     let mut vv = vec![0u8; to_write as usize];
 
-                    if !reader.seek(SeekFrom::Start(old_pos as u64)).is_ok() { panic!("Error while seeking in vfs"); }
-                    if !reader.read(&mut vv).is_ok() { panic!("Unexpected EOF!") }
+                    if !reader.seek(SeekFrom::Start(old_pos as u64)).is_ok() { eprintln!("Error while seeking in vfs"); return false; }
+                    if !reader.read(&mut vv).is_ok() { eprintln!("Unexpected EOF!"); return false; }
                     assert_eq!(vv.len(), to_write as usize);
                     f.write_all(&vv).unwrap();
-                    f.flush().unwrap();
                     written += to_write;
                     old_pos += to_write as i64;
                     if remaining == to_write && remaining != cov.length {
@@ -129,16 +121,15 @@ impl KrPatcher {
                     let mut v = vec![0u8; to_write as usize];
                     self.read(&mut v).unwrap();
                     f.write_all(&v).unwrap();
-                    f.flush().unwrap();
                     to_read -= to_write;
                     written += to_write;
                 }
             }
             written = 0;
-            println!("Successfully patched {:?} [{}/{}]", dest.join(&cur_file.name), i + 1, &self.diff.head_data.new_files.len());
+            #[cfg(debug_assertions)] { println!("Successfully patched {:?} [{}/{}]", dest.join(&cur_file.name), i + 1, &self.diff.head_data.new_files.len()); }
         }
         // merge if inplace
-        println!("Everything patched with success (hopefully)");
+        #[cfg(debug_assertions)] { println!("Everything patched with success"); }
         true
     }
 }

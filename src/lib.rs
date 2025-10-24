@@ -7,9 +7,9 @@ mod tests {
 
     #[test]
     fn apply_krdiff_patch() {
-        let src = String::from("/games/kuro/wuwa_global/loiaoxtk0p0jll9mau17arwt");
-        let krdiff = String::from("/home/tukan/Downloads/2.5.1_2.6.0_1755139250977.krdiff");
-        let dst = String::from("/games/kuro/wuwa_global/testing");
+        let src = String::from("/games/kuro/wuwa_global/testing");
+        let krdiff = String::from("/home/tukan/Downloads/2.6.2_2.7.0_group_0_1758867688720.krpdiff");
+        let dst = String::from("/games/kuro/wuwa_global/testing/output");
 
         let mut krd = KrDiff::new(src, krdiff, Some(dst));
         let status = krd.apply();
