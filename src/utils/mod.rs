@@ -1,5 +1,5 @@
 use std::{fs, io};
-use std::io::{Cursor, Read, Seek};
+use std::io::{BufRead, Read, Seek};
 use std::path::Path;
 use crate::utils::parser::{Parser};
 
@@ -26,8 +26,8 @@ pub struct CoverBuf {
 impl CoverBuf {
     pub fn parse(parser: &mut Parser<impl Read + Seek>, size: u64, compressed_size: u64, cover_count: u64) -> Self {
         let data = parser.read_maybe_compressed(size, compressed_size);
-        let mut sub_parser = Parser::from_reader(Cursor::new(&data), "cover_buf");
-        //assert_eq!(data.len() as u64, size);
+        let mut sub_parser = parser.sub_parser(&data, "cover_buf");
+        assert_eq!(data.len() as u64, size);
 
         let mut covers = Vec::with_capacity(cover_count as usize);
         for _ in 0..cover_count {
