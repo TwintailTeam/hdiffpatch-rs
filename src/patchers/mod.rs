@@ -1,7 +1,7 @@
 use std::fs::{remove_dir_all, File};
 use std::{fs, io};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path};
 use zstd::stream::Decoder;
 use crate::utils;
 use crate::utils::{merge_dirs_recursive, DirDiff};
@@ -69,7 +69,20 @@ impl KrPatcher {
         for file in self.diff.head_data.old_files.clone() {
             let full_path = source.join(&file.name);
             old_files.push(full_path);
+            // Fix files that clearly need to be patched but array does not have them... cursed
+            for (i, f) in self.diff.head_data.new_files.iter().enumerate() {
+                let ofp = old_files.get(i);
+                match ofp {
+                    None => {
+                        let fp = source.join(&f.name);
+                        if fp.exists() { old_files.push(fp); }
+                    }
+                    _ => {}
+                }
+            }
         }
+
+        println!("old_files: {:?}", old_files);
 
         for nd in self.diff.head_data.new_dirs.clone() {
             let full_path = dest.join(&nd.name);
@@ -89,44 +102,49 @@ impl KrPatcher {
             let mut f = File::create(&destination_file).unwrap();
             f.set_len(cur_file.file_size).unwrap();
 
-            let old_file_path = &old_files.get(i).unwrap();
-            let mut reader = File::open(old_file_path).unwrap();
+            let old_file_path = &old_files.get(i);
+            match old_file_path {
+                Some(old_file_pathp) => {
+                    let mut reader = File::open(old_file_pathp).unwrap();
 
-            while written < cur_file.file_size {
-                let remaining = cur_file.file_size - written;
-                if to_read == 0 && cover_idx < covers.len() {
-                    let cov = &mut covers[cover_idx];
-                    old_pos += cov.old_pos;
-                    let to_write = cov.length.min(remaining);
-                    let mut vv = vec![0u8; to_write as usize];
+                    while written < cur_file.file_size {
+                        let remaining = cur_file.file_size - written;
+                        if to_read == 0 && cover_idx < covers.len() {
+                            let cov = &mut covers[cover_idx];
+                            old_pos += cov.old_pos;
+                            let to_write = cov.length.min(remaining);
+                            let mut vv = vec![0u8; to_write as usize];
 
-                    if !reader.seek(SeekFrom::Start(old_pos as u64)).is_ok() { eprintln!("Error while seeking in vfs"); return false; }
-                    if !reader.read(&mut vv).is_ok() { eprintln!("Unexpected EOF!"); return false; }
-                    assert_eq!(vv.len(), to_write as usize);
-                    f.write_all(&vv).unwrap();
-                    written += to_write;
-                    old_pos += to_write as i64;
-                    if remaining == to_write && remaining != cov.length {
-                        to_read = 0;
-                        cov.length -= to_write;
-                        cov.old_pos = 0;
-                        cov.new_pos = 0;
-                    } else {
-                        if cover_idx + 1 < covers.len() { to_read = covers[cover_idx + 1].new_pos; }
-                        cover_idx += 1;
+                            if !reader.seek(SeekFrom::Start(old_pos as u64)).is_ok() { eprintln!("Error while seeking in vfs"); return false; }
+                            if !reader.read(&mut vv).is_ok() { eprintln!("Unexpected EOF!"); return false; }
+                            assert_eq!(vv.len(), to_write as usize);
+                            f.write_all(&vv).unwrap();
+                            written += to_write;
+                            old_pos += to_write as i64;
+                            if remaining == to_write && remaining != cov.length {
+                                to_read = 0;
+                                cov.length -= to_write;
+                                cov.old_pos = 0;
+                                cov.new_pos = 0;
+                            } else {
+                                if cover_idx + 1 < covers.len() { to_read = covers[cover_idx + 1].new_pos; }
+                                cover_idx += 1;
+                            }
+                        } else {
+                            let mut to_write = remaining;
+                            if cover_idx < covers.len() { to_write = remaining.min(to_read); }
+                            let mut v = vec![0u8; to_write as usize];
+                            self.read(&mut v).unwrap();
+                            f.write_all(&v).unwrap();
+                            to_read -= to_write;
+                            written += to_write;
+                        }
                     }
-                } else {
-                    let mut to_write = remaining;
-                    if cover_idx < covers.len() { to_write = remaining.min(to_read); }
-                    let mut v = vec![0u8; to_write as usize];
-                    self.read(&mut v).unwrap();
-                    f.write_all(&v).unwrap();
-                    to_read -= to_write;
-                    written += to_write;
+                    written = 0;
+                    #[cfg(debug_assertions)] { println!("Successfully patched {:?} [{}/{}]", dest.join(&cur_file.name), i + 1, &self.diff.head_data.new_files.len()); }
                 }
+                _ => { eprintln!("File {} does not exist in old_files array!", cur_file.name); }
             }
-            written = 0;
-            #[cfg(debug_assertions)] { println!("Successfully patched {:?} [{}/{}]", dest.join(&cur_file.name), i + 1, &self.diff.head_data.new_files.len()); }
         }
         // merge if inplace
         #[cfg(debug_assertions)] { println!("Everything patched with success"); }

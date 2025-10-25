@@ -27,7 +27,7 @@ impl CoverBuf {
     pub fn parse(parser: &mut Parser<impl Read + Seek>, size: u64, compressed_size: u64, cover_count: u64) -> Self {
         let data = parser.read_maybe_compressed(size, compressed_size);
         let mut sub_parser = parser.sub_parser(&data, "cover_buf");
-        assert_eq!(data.len() as u64, size);
+        assert!(data.len() as u64 == size);
 
         let mut covers = Vec::with_capacity(cover_count as usize);
         for _ in 0..cover_count {
