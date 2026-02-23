@@ -11,7 +11,7 @@ mod tests {
         let krdiff = String::from("/games/kuro/wuwa_global/c7s90wschv2dj8d9ilfdzifl/patching/staging/2.6.2_2.7.0_group_30_1758874286190.krpdiff");
         let dst = String::from("/games/kuro/wuwa_global/c7s90wschv2dj8d9ilfdzifl/patching/staging");
 
-        let mut krd = KrDiff::new(src, krdiff, Some(dst));
+        let mut krd = KrDiff::new(src, krdiff, dst);
         let status = krd.apply();
         if status { println!("krdiff applied successfully"); } else { println!("krdiff apply failed"); }
     }
