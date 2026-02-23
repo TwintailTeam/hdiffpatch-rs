@@ -65,6 +65,12 @@ impl KrPatchDir {
             Ok(NewFileCombinedStream { file, size: fe.size })
         }).collect::<io::Result<_>>()?;
         let mut new_combined = CombinedStream::from_new_files(new_handles)?;
+        if old_combined.length() != hd19.old_ref_size {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("[KrPatchDir] Combined old size mismatch: expected {} bytes, got {} bytes", hd19.old_ref_size, old_combined.length())));
+        }
+        if new_combined.length() != hd19.new_ref_size {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("[KrPatchDir] Combined new size mismatch: expected {} bytes, got {} bytes", hd19.new_ref_size, new_combined.length())));
+        }
 
         let mut cb = write_bytes_cb;
         apply_patch(&hd13, hd19.old_ref_size, hd19.new_ref_size, &mut old_combined, &mut new_combined, &self.patch_path, &mut cb)?;
@@ -138,7 +144,11 @@ fn apply_patch(hd13: &KrHd13, old_ref_size: u64, new_ref_size: u64, old_combined
         if let Some(cb) = write_bytes_cb.as_mut() { cb(write_pos as i64); }
     }
 
-    if write_pos < new_ref_size { copy_n(&mut *new_data, new_combined, (new_ref_size - write_pos) as usize, &mut buf)?; }
+    if write_pos < new_ref_size {
+        copy_n(&mut *new_data, new_combined, (new_ref_size - write_pos) as usize, &mut buf)?;
+        write_pos = new_ref_size;
+        if let Some(cb) = write_bytes_cb.as_mut() { cb(write_pos as i64); }
+    }
     Ok(())
 }
 
@@ -186,24 +196,12 @@ fn parse_hd19(reader: &mut (impl Read + Seek)) -> io::Result<KrHd19> {
     skip_bytes(reader, extern_size)?;
 
     let comp_mode = CompressionMode::from_str(&comp_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    if comp_mode != CompressionMode::Zstd { return Err(io::Error::new(io::ErrorKind::InvalidData, format!("[KrPatchDir] Unsupported HDIFF19 compression mode for KrDiff: {}", comp_str))); }
     Ok(KrHd19 { comp_mode, old_ref_size, new_ref_size, head })
 }
 
 fn parse_hd19_head(reader: &mut (impl Read + Seek), old_path_count:u64, new_path_count: u64, old_ref_file_count: u64, new_ref_file_count: u64, head_data_size: u64, head_data_comp_size: u64) -> io::Result<KrHead> {
-    let head_bytes = if head_data_comp_size > 0 {
-        let mut comp = vec![0u8; head_data_comp_size as usize];
-        reader.read_exact(&mut comp)?;
-        let window_log: u32 = if cfg!(target_pointer_width = "64") { 31 } else { 30 };
-        let mut dec = zstd::stream::read::Decoder::new(Cursor::new(comp))?;
-        dec.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
-        let mut out = Vec::with_capacity(head_data_size as usize);
-        dec.read_to_end(&mut out)?;
-        out
-    } else {
-        let mut buf = vec![0u8; head_data_size as usize];
-        reader.read_exact(&mut buf)?;
-        buf
-    };
+    let head_bytes = read_block_maybe_zstd(reader, head_data_size, head_data_comp_size)?;
 
     let mut hr = Cursor::new(head_bytes);
     let mut old_paths = Vec::with_capacity(old_path_count as usize);
@@ -223,8 +221,20 @@ fn parse_hd19_head(reader: &mut (impl Read + Seek), old_path_count:u64, new_path
     let mut new_sizes = Vec::with_capacity(new_ref_file_count as usize);
     for _ in 0..new_ref_file_count { new_sizes.push(hr.read_long_7bit()? as u64); }
 
-    // Unknown field present in KrDiff: one VarInt per new reference file.
-    for _ in 0..new_ref_file_count { let _ = hr.read_long_7bit()?; }
+    // Some KrDiff variants append one extra VarInt per new reference file.
+    // Consume only if there's enough bytes left for this optional section.
+    let bytes_left = hr.get_ref().len().saturating_sub(hr.position() as usize) as u64;
+    if bytes_left >= new_ref_file_count {
+        let extra_start = hr.position();
+        let mut ok = true;
+        for _ in 0..new_ref_file_count {
+            if hr.read_long_7bit().is_err() {
+                ok = false;
+                break;
+            }
+        }
+        if !ok { hr.set_position(extra_start); }
+    }
 
     let (old_files, _old_dirs) = split_paths_with_offsets(&old_paths, &old_offsets, &old_sizes);
     let (new_files, new_directories) = split_paths_with_offsets(&new_paths, &new_offsets, &new_sizes);
@@ -284,6 +294,7 @@ fn parse_hd13(reader: &mut (impl Read + Seek)) -> io::Result<KrHd13> {
     let rle_code_file_bytes = if comp_rle_code_buf_size > 0 { comp_rle_code_buf_size } else { rle_code_buf_size };
     let new_data_diff_offset = cover_buf_start + cover_file_bytes + rle_ctrl_file_bytes + rle_code_file_bytes;
     let comp_mode = CompressionMode::from_str(&comp_str).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    if comp_mode != CompressionMode::Zstd { return Err(io::Error::new(io::ErrorKind::InvalidData, format!("[KrPatchDir] Unsupported HDIFF13 compression mode for KrDiff: {}", comp_str))); }
 
     Ok(KrHd13 {
         covers,
@@ -296,20 +307,7 @@ fn parse_hd13(reader: &mut (impl Read + Seek)) -> io::Result<KrHd13> {
 }
 
 fn read_covers(reader: &mut impl Read, cover_count: u64, cover_buf_size: u64, comp_cover_buf_size: u64) -> io::Result<Vec<KrCover>> {
-    let bytes = if comp_cover_buf_size > 0 {
-        let mut comp = vec![0u8; comp_cover_buf_size as usize];
-        reader.read_exact(&mut comp)?;
-        let window_log: u32 = if cfg!(target_pointer_width = "64") { 31 } else { 30 };
-        let mut dec = zstd::stream::read::Decoder::new(Cursor::new(comp))?;
-        dec.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
-        let mut out = Vec::with_capacity(cover_buf_size as usize);
-        dec.read_to_end(&mut out)?;
-        out
-    } else {
-        let mut buf = vec![0u8; cover_buf_size as usize];
-        reader.read_exact(&mut buf)?;
-        buf
-    };
+    let bytes = read_block_maybe_zstd(reader, cover_buf_size, comp_cover_buf_size)?;
 
     let mut cr = Cursor::new(bytes);
     let mut covers = Vec::with_capacity(cover_count as usize);
@@ -348,4 +346,25 @@ fn read_null_str(reader: &mut impl Read) -> io::Result<String> {
 fn skip_bytes(reader: &mut (impl Read + Seek), n: u64) -> io::Result<()> {
     if n > 0 { reader.seek(SeekFrom::Current(n as i64))?; }
     Ok(())
+}
+
+fn read_block_maybe_zstd(reader: &mut impl Read, decompressed_size: u64, compressed_size: u64) -> io::Result<Vec<u8>> {
+    if compressed_size == 0 {
+        let mut buf = vec![0u8; decompressed_size as usize];
+        reader.read_exact(&mut buf)?;
+        return Ok(buf);
+    }
+
+    let mut comp = vec![0u8; compressed_size as usize];
+    reader.read_exact(&mut comp)?;
+    let window_log: u32 = if cfg!(target_pointer_width = "64") { 31 } else { 30 };
+    let mut dec = zstd::stream::read::Decoder::new(Cursor::new(comp))?;
+    dec.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
+    let mut out = Vec::with_capacity(decompressed_size as usize);
+    dec.read_to_end(&mut out)?;
+
+    if out.len() as u64 != decompressed_size {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("[KrPatchDir] Decompressed size mismatch: expected {} bytes, got {} bytes", decompressed_size, out.len())));
+    }
+    Ok(out)
 }
