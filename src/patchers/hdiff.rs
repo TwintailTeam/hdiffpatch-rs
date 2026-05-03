@@ -8,11 +8,7 @@ use crate::utils::structs::DataReferenceInfo;
 
 impl HDiff {
     pub fn new(source_path: String, diff_path: String, dest_path: String) -> Self {
-        HDiff { source_path, diff_path, dest_path, cache_size: 0 }
-    }
-
-    pub fn set_cache_size(&mut self, cache_size: usize) {
-        self.cache_size = cache_size;
+        HDiff { source_path, diff_path, dest_path }
     }
 
     pub fn apply(&mut self) -> bool {
@@ -34,7 +30,6 @@ impl HDiff {
             return Ok(());
         }
 
-        // Validate input file size.
         let mut old_file = File::open(&self.source_path)?;
         let old_len = old_file.metadata()?.len() as i64;
         if old_len != header_info.old_data_size { return Err(format!("[HDiff::apply] Input file size mismatch: expected {} bytes, got {} bytes", header_info.old_data_size, old_len).into()); }
@@ -42,10 +37,8 @@ impl HDiff {
         #[cfg(debug_assertions)]
         println!("[HDiff::apply] Old size: {} ✓ | New size: {}", old_len, header_info.new_data_size);
 
-        // Create output file.
         let out_file = File::create(&self.dest_path)?;
         let mut out_writer = BufWriter::new(out_file);
-
         let patcher = PatchSingle::new(header_info);
         patcher.patch(&mut old_file, &mut out_writer, &self.diff_path, None)?;
         out_writer.flush()?;

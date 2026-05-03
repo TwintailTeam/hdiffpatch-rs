@@ -131,7 +131,6 @@ impl Header {
 
         #[cfg(debug_assertions)]
         println!("[Header::TryReadSingleFileHeaderInfo] compressedCount: {}", header_info.compressed_count);
-
         Ok(())
     }
 
@@ -150,7 +149,6 @@ impl Header {
 
         #[cfg(debug_assertions)]
         println!("[Header::TryReadNonSingleFileHeaderInfo] compressedCount: {}", header_info.compressed_count);
-
         Ok(())
     }
 
@@ -189,7 +187,6 @@ impl Header {
 
         #[cfg(debug_assertions)]
         println!("[Header::GetDiffChunkInfo] headEndPos: {} | coverEndPos: {}", chunk_info.head_end_pos, chunk_info.cover_end_pos);
-
         Ok(())
     }
 
@@ -251,7 +248,6 @@ impl Header {
 
             Self::try_seek_header(sr, skip)?;
         }
-
         Ok(())
     }
 

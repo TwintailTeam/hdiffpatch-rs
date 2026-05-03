@@ -33,7 +33,6 @@ pub(crate) fn get_clip_stream(mut file: std::fs::File, comp_mode: CompressionMod
                 Ok((Box::new(decoder), file_bytes))
             }
         }
-        // Stubs for future compression types
         CompressionMode::Zlib => { Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "zlib decompression not yet implemented")) }
         CompressionMode::Bz2 => { Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "bz2 decompression not yet implemented")) }
         CompressionMode::Lzma | CompressionMode::Lzma2 => { Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "lzma decompression not yet implemented")) }
@@ -48,9 +47,7 @@ struct LimitedFile {
 
 impl Read for LimitedFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.remaining == 0 {
-            return Ok(0);
-        }
+        if self.remaining == 0 { return Ok(0); }
         let to_read = buf.len().min(self.remaining as usize);
         let n = self.file.read(&mut buf[..to_read])?;
         self.remaining -= n as u64;

@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -23,11 +23,6 @@ impl KrPatchDir {
         Self { patch_path }
     }
 
-    /// Apply the patch.
-    ///
-    /// - `input`:  path to the old directory (source files).
-    /// - `output`: path to the output directory (new files will be created here).
-    /// - `write_bytes_cb`: optional progress callback, called with cumulative bytes written.
     pub fn patch(&self, input: &str, output: &str, write_bytes_cb: Option<Box<dyn FnMut(i64)>>) -> io::Result<()> {
         let base_input  = PathBuf::from(input);
         let base_output = PathBuf::from(output);
@@ -190,41 +185,46 @@ fn parse_hd19(reader: &mut (impl Read + Seek)) -> io::Result<KrHd19> {
 }
 
 fn parse_hd19_head(reader: &mut (impl Read + Seek), old_path_count:u64, new_path_count: u64, old_ref_file_count: u64, new_ref_file_count: u64, head_data_size: u64, head_data_comp_size: u64) -> io::Result<KrHead> {
-    let head_bytes = if head_data_comp_size > 0 {
-        let mut comp = vec![0u8; head_data_comp_size as usize];
-        reader.read_exact(&mut comp)?;
+    // Record start so we can seek to the exact end even if the decoder stops early.
+    let section_start = reader.seek(SeekFrom::Current(0))?;
+    let file_bytes = if head_data_comp_size > 0 { head_data_comp_size } else { head_data_size };
+
+    let head = if head_data_comp_size > 0 {
         let window_log: u32 = if cfg!(target_pointer_width = "64") { 31 } else { 30 };
-        let mut dec = zstd::stream::read::Decoder::new(Cursor::new(comp))?;
+        // Stream directly into the decoder — no intermediate compressed or decompressed Vec.
+        let mut dec = zstd::stream::read::Decoder::new(reader.by_ref().take(head_data_comp_size))?;
         dec.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
-        let mut out = Vec::with_capacity(head_data_size as usize);
-        dec.read_to_end(&mut out)?;
-        out
+        parse_head_data_seq(&mut dec, old_path_count, new_path_count, old_ref_file_count, new_ref_file_count)?
     } else {
-        let mut buf = vec![0u8; head_data_size as usize];
-        reader.read_exact(&mut buf)?;
-        buf
+        let mut limited = reader.by_ref().take(head_data_size);
+        parse_head_data_seq(&mut limited, old_path_count, new_path_count, old_ref_file_count, new_ref_file_count)?
     };
 
-    let mut hr = Cursor::new(head_bytes);
+    // Guarantee reader sits exactly at the end of the section regardless of decoder internals.
+    reader.seek(SeekFrom::Start(section_start + file_bytes))?;
+    Ok(head)
+}
+
+fn parse_head_data_seq(reader: &mut impl Read, old_path_count: u64, new_path_count: u64, old_ref_file_count: u64, new_ref_file_count: u64) -> io::Result<KrHead> {
     let mut old_paths = Vec::with_capacity(old_path_count as usize);
-    for _ in 0..old_path_count { old_paths.push(read_null_str(&mut hr)?); }
+    for _ in 0..old_path_count { old_paths.push(read_null_str(reader)?); }
 
     let mut new_paths = Vec::with_capacity(new_path_count as usize);
-    for _ in 0..new_path_count { new_paths.push(read_null_str(&mut hr)?); }
+    for _ in 0..new_path_count { new_paths.push(read_null_str(reader)?); }
 
     let mut old_offsets = Vec::with_capacity(old_ref_file_count as usize);
-    for _ in 0..old_ref_file_count { old_offsets.push(hr.read_long_7bit()? as u64); }
+    for _ in 0..old_ref_file_count { old_offsets.push(reader.read_long_7bit()? as u64); }
     let mut new_offsets = Vec::with_capacity(new_ref_file_count as usize);
-    for _ in 0..new_ref_file_count { new_offsets.push(hr.read_long_7bit()? as u64); }
+    for _ in 0..new_ref_file_count { new_offsets.push(reader.read_long_7bit()? as u64); }
 
     let mut old_sizes = Vec::with_capacity(old_ref_file_count as usize);
-    for _ in 0..old_ref_file_count { old_sizes.push(hr.read_long_7bit()? as u64); }
+    for _ in 0..old_ref_file_count { old_sizes.push(reader.read_long_7bit()? as u64); }
 
     let mut new_sizes = Vec::with_capacity(new_ref_file_count as usize);
-    for _ in 0..new_ref_file_count { new_sizes.push(hr.read_long_7bit()? as u64); }
+    for _ in 0..new_ref_file_count { new_sizes.push(reader.read_long_7bit()? as u64); }
 
     // Unknown field present in KrDiff: one VarInt per new reference file.
-    for _ in 0..new_ref_file_count { let _ = hr.read_long_7bit()?; }
+    for _ in 0..new_ref_file_count { let _ = reader.read_long_7bit()?; }
 
     let (old_files, _old_dirs) = split_paths_with_offsets(&old_paths, &old_offsets, &old_sizes);
     let (new_files, new_directories) = split_paths_with_offsets(&new_paths, &new_offsets, &new_sizes);
@@ -296,37 +296,35 @@ fn parse_hd13(reader: &mut (impl Read + Seek)) -> io::Result<KrHd13> {
 }
 
 fn read_covers(reader: &mut impl Read, cover_count: u64, cover_buf_size: u64, comp_cover_buf_size: u64) -> io::Result<Vec<KrCover>> {
-    let bytes = if comp_cover_buf_size > 0 {
-        let mut comp = vec![0u8; comp_cover_buf_size as usize];
-        reader.read_exact(&mut comp)?;
-        let window_log: u32 = if cfg!(target_pointer_width = "64") { 31 } else { 30 };
-        let mut dec = zstd::stream::read::Decoder::new(Cursor::new(comp))?;
-        dec.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
-        let mut out = Vec::with_capacity(cover_buf_size as usize);
-        dec.read_to_end(&mut out)?;
-        out
-    } else {
-        let mut buf = vec![0u8; cover_buf_size as usize];
-        reader.read_exact(&mut buf)?;
-        buf
-    };
-
-    let mut cr = Cursor::new(bytes);
     let mut covers = Vec::with_capacity(cover_count as usize);
 
+    if comp_cover_buf_size > 0 {
+        let window_log: u32 = if cfg!(target_pointer_width = "64") { 31 } else { 30 };
+        // Stream directly into the decoder — no intermediate compressed or decompressed Vec.
+        let mut dec = zstd::stream::read::Decoder::new(reader.by_ref().take(comp_cover_buf_size))?;
+        dec.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(window_log))?;
+        parse_covers_seq(&mut dec, cover_count, &mut covers)?;
+    } else {
+        let mut limited = reader.by_ref().take(cover_buf_size);
+        parse_covers_seq(&mut limited, cover_count, &mut covers)?;
+    }
+
+    Ok(covers)
+}
+
+fn parse_covers_seq(reader: &mut impl Read, cover_count: u64, covers: &mut Vec<KrCover>) -> io::Result<()> {
     for _ in 0..cover_count {
         let mut first = [0u8; 1];
-        cr.read_exact(&mut first)?;
+        reader.read_exact(&mut first)?;
         let p_sign  = first[0];
         let sign    = (p_sign >> 7) != 0;
-        let abs_val = cr.read_long_7bit_tagged(1, p_sign)?;
+        let abs_val = reader.read_long_7bit_tagged(1, p_sign)?;
         let old_pos_delta = if sign { -abs_val } else { abs_val };
-
-        let new_pos_gap = cr.read_long_7bit()? as u64;
-        let length = cr.read_long_7bit()? as u64;
+        let new_pos_gap = reader.read_long_7bit()? as u64;
+        let length = reader.read_long_7bit()? as u64;
         covers.push(KrCover { old_pos_delta, new_pos_gap, length });
     }
-    Ok(covers)
+    Ok(())
 }
 
 fn read_delim(reader: &mut impl Read, delim: u8, limit: usize) -> io::Result<String> {

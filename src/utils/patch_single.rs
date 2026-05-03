@@ -13,12 +13,6 @@ impl PatchSingle {
         Self { header_info }
     }
 
-    /// Apply the patch.
-    ///
-    /// - `input_stream`:  seekable reader for the old (source) file.
-    /// - `output_stream`: writer for the new (destination) file.
-    /// - `patch_file`:    path to the `.hdiff` patch file (opened 4× independently).
-    /// - `write_bytes_cb`: optional progress callback, invoked with bytes written per flush.
     pub fn patch(&self, input_stream: &mut dyn SeekableRead, output_stream: &mut dyn Write, patch_path: &str, write_bytes_cb: Option<Box<dyn FnMut(i64)>>) -> std::io::Result<()> {
         // Zlib has a 1-byte padding per compressed chunk; zstd has none.
         let padding: u64 = match self.header_info.comp_mode { CompressionMode::Zlib => 1, _ => 0 };

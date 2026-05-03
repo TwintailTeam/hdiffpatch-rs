@@ -12,10 +12,8 @@ HERE BE DRAGONS you are warned!!!
 
 impl KrDiff {
     pub fn new(source_path: String, diff_path: String, dest_path: String) -> Self {
-        KrDiff { source_path, diff_path, dest_path, cache_size: 0 }
+        KrDiff { source_path, diff_path, dest_path }
     }
-
-    pub fn set_cache_size(&mut self, cache_size: usize) { self.cache_size = cache_size; }
 
     pub fn apply(&mut self) -> bool {
         match self.apply_inner() {

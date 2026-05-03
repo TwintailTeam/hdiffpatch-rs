@@ -22,11 +22,6 @@ impl PatchDir {
         Self { header_info, reference_info, patch_path }
     }
 
-    /// Apply the directory patch.
-    ///
-    /// - `input`:  path to the old directory (source).
-    /// - `output`: path to the new directory (destination, will be created/overwritten).
-    /// - `write_bytes_cb`: optional progress callback, called with bytes written per flush.
     pub fn patch(&mut self, input: &str, output: &str, write_bytes_cb: Option<Box<dyn FnMut(i64)>>) -> std::io::Result<()> {
         let base_input  = PathBuf::from(input);
         let base_output = PathBuf::from(output);

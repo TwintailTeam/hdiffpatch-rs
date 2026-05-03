@@ -7,9 +7,9 @@ use crate::utils::structs::{
 
 const K_SIGN_TAG_BIT: u8  = 1;
 const K_BYTE_RLE_TYPE: u8 = 2;
-const MAX_MEM_BUFFER_LEN:   i64   = 7 << 20;  // 7 MiB: switch to in-memory cover parsing below this
+const MAX_MEM_BUFFER_LEN: i64 = 7 << 20;  // 7 MiB: switch to in-memory cover parsing below this
 const MAX_MEM_BUFFER_LIMIT: usize = 10 << 20; // 10 MiB: flush cache output above this
-const MAX_ARRAY_POOL_LEN:   usize = 4 << 20;  // 4 MiB: shared read buffer
+const MAX_ARRAY_POOL_LEN: usize = 4 << 20;  // 4 MiB: shared read buffer
 const MAX_ARRAY_POOL_SECOND_OFFSET: usize = MAX_ARRAY_POOL_LEN / 2;
 
 impl PatchCore for PatchCoreImpl {
@@ -46,7 +46,6 @@ impl PatchCoreImpl {
         let mut remaining = cover_count;
 
         if cover_size < MAX_MEM_BUFFER_LEN {
-            // Load the whole cover buffer into memory, then parse with slice reader.
             let mut buffer = vec![0u8; cover_size as usize];
             cover_reader.read_exact(&mut buffer).expect("failed to read cover buffer");
 
@@ -66,13 +65,11 @@ impl PatchCoreImpl {
                 let copy_length  = read_long_7bit_from_slice(&buffer, &mut offset, 0, 0);
                 let cover_length = read_long_7bit_from_slice(&buffer, &mut offset, 0, 0);
                 let new_pos_back = new_pos_back + copy_length;
-                // Advance old pos back by cover_length (matches C# `oldPosBack += true ? coverLength : 0`)
                 last_old_pos_back = old_pos + cover_length;
                 last_new_pos_back = new_pos_back + cover_length;
                 headers.push(CoverHeader::new(old_pos, new_pos_back, cover_length, remaining));
             }
         } else {
-            // Parse directly from the stream.
             while remaining > 0 {
                 remaining -= 1;
 
@@ -101,34 +98,24 @@ impl PatchCoreImpl {
         let mut shared_buffer = vec![0u8; MAX_ARRAY_POOL_LEN];
         let mut cache = Cursor::new(Vec::<u8>::new());
 
-        // Copy same-named files first (directory patch only).
         self.run_copy_similar_files_routine();
-
         let mut new_pos_back = 0i64;
         let mut rle_struct = RleRefClip::default();
-        // Split the clips slice to allow simultaneous mutable borrows of different elements.
-        //   left  = [clip0 (cover_buf),    clip1 (rle_ctrl_buf)]
-        //   right = [clip2 (rle_code_buf), clip3 (new_data_diff)]
         let (left, right) = clips.split_at_mut(2);
-        // Read all cover headers upfront from clip[0].
         let headers = Self::enumerate_cover_headers(&mut *left[0], cover_size, cover_count);
 
         for cover in &headers {
-            // Fill the gap between the end of the previous cover and the start of this one.
             if new_pos_back < cover.new_pos {
                 let copy_length = cover.new_pos - new_pos_back;
                 Self::tbytes_copy_stream_from_old_clip(&mut cache, &mut *right[1], copy_length, &mut shared_buffer);
                 Self::tbytes_determine_rle_type(&mut rle_struct, &mut cache, copy_length, &mut shared_buffer, &mut *left[1], &mut *right[0]);
             }
 
-            // Apply the cover: copy from old file at old_pos, then XOR with diff stream.
             Self::tbytes_copy_old_clip_patch(&mut cache, input_stream, &mut rle_struct, cover.old_pos, cover.cover_length, &mut shared_buffer, &mut *left[1], &mut *right[0]);
             new_pos_back = cover.new_pos + cover.cover_length;
-            // Flush cache to output if it's grown large enough, or this is the last cover.
             if cache.get_ref().len() > MAX_MEM_BUFFER_LIMIT || cover.next_cover_index == 0 { Self::write_cache_to_output(&mut cache, output_stream, &mut self.write_bytes_callback); }
         }
 
-        // Trailing data after the last cover.
         if new_pos_back < new_data_size {
             let copy_length = new_data_size - new_pos_back;
             Self::tbytes_copy_stream_from_old_clip(&mut cache, &mut *right[1], copy_length, &mut shared_buffer);
@@ -141,7 +128,6 @@ impl PatchCoreImpl {
         let data = cache.get_ref();
         let written = data.len() as i64;
         output.write_all(data).expect("failed to write cache to output");
-        // Reset cache
         cache.get_mut().clear();
         cache.set_position(0);
         if let Some(cb) = callback.as_mut() { cb(written); }
@@ -149,7 +135,6 @@ impl PatchCoreImpl {
 
     fn tbytes_copy_old_clip_patch(out_cache: &mut Cursor<Vec<u8>>, input_stream: &mut dyn SeekableRead, rle_loader: &mut RleRefClip, old_pos: i64, add_length: i64, shared_buffer: &mut [u8], rle_ctrl_stream: &mut dyn Read, rle_code_stream: &mut dyn Read) {
         let last_pos = out_cache.position();
-        // Seek old file to the cover's source position.
         input_stream.seek(SeekFrom::Start(old_pos as u64)).expect("failed to seek input_stream");
         Self::tbytes_copy_stream_inner(input_stream, out_cache, shared_buffer, add_length as usize);
         out_cache.seek(SeekFrom::Start(last_pos)).expect("failed to restore cache position");
@@ -208,12 +193,8 @@ impl PatchCoreImpl {
 
         let decode_step = rle_loader.mem_copy_length.min(*copy_length) as usize;
         let last_pos = out_cache.position();
-
-        // Read `decode_step` bytes from the code stream into the first half of shared_buffer.
         rle_code_stream.read_exact(&mut shared_buffer[..decode_step]).expect("failed to read from rle_code_stream");
-        // Read `decode_step` bytes from the current cache position into the second half.
         out_cache.read_exact(&mut shared_buffer[MAX_ARRAY_POOL_SECOND_OFFSET..MAX_ARRAY_POOL_SECOND_OFFSET + decode_step]).expect("failed to read from out_cache");
-        // Restore cache position and XOR-add code bytes with old bytes.
         out_cache.seek(SeekFrom::Start(last_pos)).expect("failed to restore cache pos");
         Self::tbytes_set_rle_vector_software(rle_loader, out_cache, copy_length, decode_step, shared_buffer, 0, MAX_ARRAY_POOL_SECOND_OFFSET);
     }
@@ -227,12 +208,9 @@ impl PatchCoreImpl {
             let len = mem_set_step as usize;
             out_cache.read_exact(&mut shared_buffer[..len]).expect("failed to read from cache for memset");
             out_cache.seek(SeekFrom::Start(last_pos)).expect("failed to restore cache pos for memset");
-
-            // Add `mem_set_value` to each byte (wrapping).
             for i in (0..len).rev() { shared_buffer[i] = shared_buffer[i].wrapping_add(rle_loader.mem_set_value); }
             out_cache.write_all(&shared_buffer[..len]).expect("failed to write memset result to cache");
         } else {
-            // Value is 0 — adding 0 is a no-op, just advance the write cursor.
             let cur = out_cache.position();
             out_cache.set_position(cur + mem_set_step as u64);
         }
@@ -259,7 +237,6 @@ impl PatchCoreImpl {
     }
 
     fn copy_old_similar_to_new_files(&self, dir_data: &DirectoryReferencePair) {
-        // Copy identical-content files (same-pair).
         for pair in &dir_data.data_same_pair_list {
             let new_path = &dir_data.new_utf8_path_list[pair.new_index as usize];
             if Self::is_path_a_dir(new_path) { continue; }
@@ -269,7 +246,6 @@ impl PatchCoreImpl {
             let _ = std::fs::copy(&old_full, &new_full);
         }
 
-        // Create empty files / directories for paths that aren't in any ref list.
         let new_ref_count  = dir_data.new_ref_list.len();
         let same_pair_count = dir_data.data_same_pair_list.len();
         let path_count = dir_data.new_utf8_path_list.len();

@@ -142,7 +142,6 @@ pub(crate) trait BinaryExtensions: Read {
                 if paths.len() == count { break; }
             }
         }
-        // Pad if buffer ran out before we found enough null terminators
         while paths.len() < count { paths.push(String::new()); }
         Ok(paths)
     }
@@ -197,7 +196,6 @@ impl<T: Read + Seek> Read for ChunkStream<T> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.remain() == 0 { return Ok(0); }
         let to_read = std::cmp::min(buf.len() as u64, self.remain()) as usize;
-        // Sync inner position
         self.inner.seek(SeekFrom::Start(self.start + self.cur_pos))?;
         let n = self.inner.read(&mut buf[..to_read])?;
         self.cur_pos += n as u64;
@@ -262,9 +260,7 @@ impl CombinedStream {
             self.index = self.streams.len() - 1;
             return Ok(());
         }
-        // Walk backwards if needed
         while self.index > 0 && self.position < self.start_positions[self.index] { self.index -= 1; }
-        // Walk forwards if needed
         while self.index + 1 < self.streams.len() {
             let cur_end = self.start_positions[self.index] + self.streams[self.index].metadata()?.len();
             if self.position >= cur_end { self.index += 1; } else { break; }
