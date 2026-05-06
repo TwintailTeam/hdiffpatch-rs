@@ -3,6 +3,7 @@ use std::io::{BufWriter, Write};
 use crate::patchers::HDiff;
 use crate::utils::header::Header;
 use crate::utils::patch_dir::PatchDir;
+use crate::utils::patch_sf::PatchSF;
 use crate::utils::patch_single::PatchSingle;
 use crate::utils::structs::DataReferenceInfo;
 
@@ -39,8 +40,7 @@ impl HDiff {
 
         let out_file = File::create(&self.dest_path)?;
         let mut out_writer = BufWriter::new(out_file);
-        let patcher = PatchSingle::new(header_info);
-        patcher.patch(&mut old_file, &mut out_writer, &self.diff_path, None)?;
+        if header_info.is_single_compressed_diff { PatchSF::new(header_info).patch(&mut old_file, &mut out_writer, &self.diff_path, None)?; } else { PatchSingle::new(header_info).patch(&mut old_file, &mut out_writer, &self.diff_path, None)?; }
         out_writer.flush()?;
         Ok(())
     }

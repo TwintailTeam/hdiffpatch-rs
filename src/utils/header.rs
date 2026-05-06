@@ -24,37 +24,31 @@ impl Header {
         let h_info_arr: Vec<&str> = header_info_line.split('&').collect();
 
         if h_info_arr.len() == 2 {
-            // Single-file patch format: "HDIFF13&zstd"
             let p_file_ver = Self::try_get_version(h_info_arr[0])?;
-            if p_file_ver != 13 { return Err("[Header::TryParseHeaderInfo] HDiff version is unsupported. This patcher only supports the single patch file with version: 13 only!".into()); }
+            if p_file_ver != 13 && p_file_ver != 20 { return Err(format!("[Header::TryParseHeaderInfo] HDiff version {} unsupported (only 13 and 20 supported)", p_file_ver).into()); }
             is_patch_dir = false;
             header_info.header_magic = h_info_arr[0].to_string();
             header_info.comp_mode = h_info_arr[1].parse().map_err(|e: String| e)?;
+            header_info.is_single_compressed_diff = p_file_ver == 20;
 
             #[cfg(debug_assertions)]
-            println!("[Header::TryParseHeaderInfo] Version: {} Compression: {:?}", p_file_ver, header_info.comp_mode);
+            println!("[Header::TryParseHeaderInfo] Version: {} Compression: {:?} SF20: {}", p_file_ver, header_info.comp_mode, header_info.is_single_compressed_diff);
         } else if h_info_arr.len() != 3 { return Err(format!("[Header::TryParseHeaderInfo] Header info is incomplete! Expecting 3 parts but got {} part(s) instead (Raw: {})", h_info_arr.len(), header_info_line).into()); }
 
         if is_patch_dir {
-            // Directory patch format: "HDIFF19&zstd&fadler64"
+            // Directory patch: "HDIFF19&zstd&fadler64"
             let h_info_ver = Self::try_get_version(h_info_arr[0])?;
             if h_info_ver != 19 { return Err("[Header::TryParseHeaderInfo] HDiff version is unsupported. This patcher only supports the directory patch file with version: 19 only!".into()); }
-
-            if !h_info_arr[1].is_empty() {
-                header_info.comp_mode = h_info_arr[1].parse().map_err(|_: String| { format!("[Header::TryParseHeaderInfo] This patcher doesn't support {} compression!", h_info_arr[1]) })?;
-            }
-
-            if h_info_arr[2].is_empty() {
-                header_info.checksum_mode = ChecksumMode::Nochecksum;
-            } else {
-                header_info.checksum_mode = h_info_arr[2].parse().map_err(|_: String| { format!("[Header::TryParseHeaderInfo] This patcher doesn't support {} checksum!", h_info_arr[2]) })?;
-            }
+            if !h_info_arr[1].is_empty() { header_info.comp_mode = h_info_arr[1].parse().map_err(|_: String| { format!("[Header::TryParseHeaderInfo] This patcher doesn't support {} compression!", h_info_arr[1]) })?; }
+            if h_info_arr[2].is_empty() { header_info.checksum_mode = ChecksumMode::Nochecksum; } else { header_info.checksum_mode = h_info_arr[2].parse().map_err(|_: String| { format!("[Header::TryParseHeaderInfo] This patcher doesn't support {} checksum!", h_info_arr[2]) })?; }
 
             #[cfg(debug_assertions)]
             println!("[Header::TryParseHeaderInfo] Version: {} ChecksumMode: {:?} Compression: {:?}", h_info_ver, header_info.checksum_mode, header_info.comp_mode);
 
             Self::try_read_header_and_reference_info(sr, header_info, reference_info)?;
             Self::try_read_extern_reference_info(sr, diff_path, header_info, reference_info)?;
+        } else if header_info.is_single_compressed_diff {
+            Self::try_read_single_file_header_info(sr, diff_path, header_info, reference_info)?;
         } else {
             Self::try_read_non_single_file_header_info(sr, diff_path, header_info)?;
         }
@@ -102,9 +96,7 @@ impl Header {
         #[cfg(debug_assertions)]
         println!("[Header::TryIdentifyDiffType] HDIFF Dir Signature: {}", single_compressed_header_line);
 
-        if single_compressed_header_arr.len() > 1 && !single_compressed_header_arr[1].is_empty() {
-            header_info.comp_mode = single_compressed_header_arr[1].parse().map_err(|_: String| { format!("[Header::TryIdentifyDiffType] Unsupported compression: {}", single_compressed_header_arr[1]) })?;
-        }
+        if single_compressed_header_arr.len() > 1 && !single_compressed_header_arr[1].is_empty() { header_info.comp_mode = single_compressed_header_arr[1].parse().map_err(|_: String| { format!("[Header::TryIdentifyDiffType] Unsupported compression: {}", single_compressed_header_arr[1]) })?; }
         header_info.header_magic = single_compressed_header_arr[0].to_string();
 
         Self::try_read_non_single_file_header_info(sr, diff_path, header_info)
@@ -259,7 +251,8 @@ impl Header {
 
     fn try_get_version(str_val: &str) -> Result<i64, Box<dyn std::error::Error>> {
         let idx = str_val.find(Self::HDIFF_HEAD).ok_or_else(|| { format!("[Header::TryGetVersion] Cannot find 'HDIFF' in: {}", str_val) })?;
-        let num_str = &str_val[idx + Self::HDIFF_HEAD.len()..];
+        let rest = &str_val[idx + Self::HDIFF_HEAD.len()..];
+        let num_str = rest.trim_start_matches(|c: char| !c.is_ascii_digit());
         num_str.parse::<i64>().map_err(|_| { format!("[Header::TryGetVersion] Invalid version string: {} (Raw: {})", num_str, str_val).into() })
     }
 }

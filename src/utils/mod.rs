@@ -6,3 +6,4 @@ pub(crate) mod patch_single;
 pub(crate) mod patch_core;
 pub(crate) mod patch_dir;
 pub(crate) mod patch_krdir;
+pub(crate) mod patch_sf;
